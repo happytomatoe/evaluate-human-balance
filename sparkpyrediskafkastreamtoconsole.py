@@ -2,31 +2,11 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, to_json, col, unbase64, base64, split, expr
 from pyspark.sql.types import *
 
-
-
 spark = SparkSession \
     .builder \
     .appName("Python Spark SQL basic example") \
     .getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
-
-# with this JSON format: {"key":"Q3VzdG9tZXI=",
-# "existType":"NONE",
-# "Ch":false,
-# "Incr":false,
-# "zSetEntries":[{
-# "element":"eyJjdXN0b21lck5hbWUiOiJTYW0gVGVzdCIsImVtYWlsIjoic2FtLnRlc3RAdGVzdC5jb20iLCJwaG9uZSI6IjgwMTU1NTEyMTIiLCJiaXJ0aERheSI6IjIwMDEtMDEtMDMifQ==",
-# "Score":0.0
-# }],
-# "zsetEntries":[{
-# "element":"eyJjdXN0b21lck5hbWUiOiJTYW0gVGVzdCIsImVtYWlsIjoic2FtLnRlc3RAdGVzdC5jb20iLCJwaG9uZSI6IjgwMTU1NTEyMTIiLCJiaXJ0aERheSI6IjIwMDEtMDEtMDMifQ==",
-# "score":0.0
-# }]
-# }
-#
-
-# TO-DO: create a StructType for the Kafka redis-server topic which has all changes made to Redis - before Spark 3.0.0, schema inference is not automatic
-VIEW_NAME = "RedisSortedSet"
 
 df = spark \
     .readStream \
@@ -36,77 +16,62 @@ df = spark \
     .option("startingOffsets", "earliest") \
     .load()
 
+v = StructType([
+    StructField("element", StringType()),
+    StructField("score", DecimalType(10, 1)),
+
+])
+
 schema = StructType([
     StructField("key", StringType()),
     StructField("value", StringType()),
+    StructField("expiredType", StringType()),
+    StructField("expiredValue", StringType()),
     StructField("existType", StringType()),
-    StructField("Ch", StringType()),
-    StructField("zSetEntries", ArrayType(StringType(), False)),
+    StructField("ch", StringType()),
+    StructField("incr", StringType()),
+    StructField("zSetEntries", ArrayType(v)),
+])
+df = df.select(df.key.cast("string").alias("key"), df.value.cast("string").alias("value"))
+
+# df=df.selectExpr("root2.*")
+df.createOrReplaceTempView("RedisSortedSet")
+
+df = df.select(from_json(df.value, schema).alias("value"))
+df = df.selectExpr("value.*")
+# df=df.select(unbase64(df.key).cast("string").alias("key"),df.value[0].alias("s"))
+
+# df=df.select("s.*")
+# df=df.withColumn("element",unbase64(df.element).cast("string"))
+
+customer_schema = StructType([
+    StructField("customerName", StringType()),
+    StructField("email", StringType()),
+    StructField("phone", StringType()),
+    StructField("birthDay", StringType()),
+
+])
+elSchema = StructType([
+    StructField("customer", customer_schema)
 ])
 
+df = df.withColumn("key", unbase64(df.key).cast("string"))
+df = df.filter(df.key == 'RapidStepTest')
 
-df = df.select(from_json(df.value.cast("string"), schema).alias("root2"))
-df.createOrReplaceTempView(VIEW_NAME)
+df2 = df.withColumn("element", unbase64(df.zSetEntries[0].element).cast("string"))
+df2 = df2.withColumn("element", from_json(df2.element, elSchema))
+df2 = df2.selectExpr("element.customer.*")
 
-q=spark.sql(f"SELECT * FROM {VIEW_NAME}") \
+df2.createOrReplaceTempView("CustomerRecords")
+
+emailAndBirthDayStreamingDF = df2.selectExpr("email as email", "split(birthDay,'-')[0] as birthYear")
+emailAndBirthDayStreamingDF.createOrReplaceTempView("q")
+
+q = spark.sql(f"SELECT * FROM q") \
     .writeStream \
-    .format("memory") \
-    .queryName("q") \
-    .start()
-
-v = StructType([
-    StructField("element", StringType()),
-    StructField("score", DecimalType()),
-
-])
-
-raw = spark.sql("select root2.zSetEntries[0].element  from q")
-raw.show(truncate=False)
-# TO-DO: execute a sql statement against a temporary view, which statement takes the element field from the 0th
-# element in the array of structs and create a column called encodedCustomer
-# the reason we do it this way is that the syntax available select against a view is different than a dataframe,
-# and it makes it easy to select the nth element of an array in a sql column
-
-# TO-DO: take the encodedCustomer column which is base64 encoded at first like this:
-# +--------------------+
-# |            customer|
-# +--------------------+
-# |[7B 22 73 74 61 7...|
-# +--------------------+
-
-# and convert it to clear json like this:
-# +--------------------+
-# |            customer|
-# +--------------------+
-# |{"customerName":"...|
-# +--------------------+
-#
-# with this JSON format: {"customerName":"Sam Test","email":"sam.test@test.com","phone":"8015551212","birthDay":"2001-01-03"}
-
-# TO-DO: parse the JSON in the Customer record and store in a temporary view called CustomerRecords
-
-# TO-DO: JSON parsing will set non-existent fields to null, so let's select just the fields we want, where they are not null as a new dataframe called emailAndBirthDayStreamingDF
-
-# TO-DO: from the emailAndBirthDayStreamingDF dataframe select the email and the birth year (using the split function)
-
-# TO-DO: Split the birth year as a separate field from the birthday
-# TO-DO: Select only the birth year and email fields as a new streaming data frame called emailAndBirthYearStreamingDF
-
-# TO-DO: sink the emailAndBirthYearStreamingDF dataframe to the console in append mode
-# 
-# The output should look like this:
-# +--------------------+-----               
-# | email         |birthYear|
-# +--------------------+-----
-# |Gail.Spencer@test...|1963|
-# |Craig.Lincoln@tes...|1962|
-# |  Edward.Wu@test.com|1961|
-# |Santosh.Phillips@...|1960|
-# |Sarah.Lincoln@tes...|1959|
-# |Sean.Howard@test.com|1958|
-# |Sarah.Clark@test.com|1957|
-# +--------------------+-----
-
-# Run the python script by running the command from the terminal:
-# /home/workspace/submit-redis-kafka-streaming.sh
-# Verify the data looks correct
+    .format("console") \
+    .outputMode("append") \
+    .option("truncate", "false") \
+    .option("numRows", "1000") \
+    .start() \
+    .awaitTermination()
