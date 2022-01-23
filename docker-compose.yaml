@@ -107,10 +107,7 @@ services:
     - "redis"
 
   jupyterlab:
-    image: jupyter/pyspark-notebook:latest
-    build:
-        context: .
-        dockerfile: Dockerfile
+    build: '.'
     container_name: jupyterlab
     ports:
       - 8888:8888
