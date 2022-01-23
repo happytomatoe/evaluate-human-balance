@@ -1,5 +1,5 @@
 FROM python:3.7
-FROM jupyter/minimal-notebook
+FROM jupyter/pyspark-notebook:latest
 WORKDIR $HOME
 RUN python -m pip install --upgrade pip
 COPY requirements-jupyter.txt ./requirements-jupyter.txt
