@@ -1,8 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, to_json, col, unbase64, base64, split, expr
-from pyspark.sql.types import StructField, StructType, StringType, BooleanType, ArrayType, DateType
+from pyspark.sql.types import *
 
-# TO-DO: create a StructType for the Kafka redis-server topic which has all changes made to Redis - before Spark 3.0.0, schema inference is not automatic
 
 
 spark = SparkSession \
@@ -10,13 +9,6 @@ spark = SparkSession \
     .appName("Python Spark SQL basic example") \
     .getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
-
-schema = StructType([
-    StructField("key", StringType()),
-    StructField("existType", StringType()),
-    StructField("Ch", StringType()),
-    StructField("zSetEntries", StringType()),
-])
 
 # with this JSON format: {"key":"Q3VzdG9tZXI=",
 # "existType":"NONE",
@@ -32,6 +24,9 @@ schema = StructType([
 # }]
 # }
 #
+
+# TO-DO: create a StructType for the Kafka redis-server topic which has all changes made to Redis - before Spark 3.0.0, schema inference is not automatic
+VIEW_NAME = "RedisSortedSet"
 
 df = spark \
     .readStream \
@@ -41,62 +36,36 @@ df = spark \
     .option("startingOffsets", "earliest") \
     .load()
 
-df = df.select(from_json(df.value.cast("string")))
+schema = StructType([
+    StructField("key", StringType()),
+    StructField("value", StringType()),
+    StructField("existType", StringType()),
+    StructField("Ch", StringType()),
+    StructField("zSetEntries", ArrayType(StringType(), False)),
+])
 
-df \
+
+df = df.select(from_json(df.value.cast("string"), schema).alias("root2"))
+df.createOrReplaceTempView(VIEW_NAME)
+
+q=spark.sql(f"SELECT * FROM {VIEW_NAME}") \
     .writeStream \
-    .outputMode("append") \
-    .format("console") \
-    .option("truncate", "false") \
-    .start() \
-    .awaitTermination()
-# TO-DO: create a StructType for the Customer JSON that comes from Redis- before Spark 3.0.0, schema inference is not automatic
+    .format("memory") \
+    .queryName("q") \
+    .start()
 
-# TO-DO: create a StructType for the Kafka stedi-events topic which has the Customer Risk JSON that comes from Redis- before Spark 3.0.0, schema inference is not automatic
+v = StructType([
+    StructField("element", StringType()),
+    StructField("score", DecimalType()),
 
-# TO-DO: create a spark application object
+])
 
-# TO-DO: set the spark log level to WARN
-
-# TO-DO: using the spark application object, read a streaming dataframe from the Kafka topic redis-server as the source
-# Be sure to specify the option that reads all the events from the topic including those that were published before you started the spark stream
-
-# TO-DO: cast the value column in the streaming dataframe as a STRING 
-
-# TO-DO:; parse the single column "value" with a json object in it, like this:
-# +------------+
-# | value      |
-# +------------+
-# |{"key":"Q3..|
-# +------------+
-#
-# with this JSON format: {"key":"Q3VzdG9tZXI=",
-# "existType":"NONE",
-# "Ch":false,
-# "Incr":false,
-# "zSetEntries":[{
-# "element":"eyJjdXN0b21lck5hbWUiOiJTYW0gVGVzdCIsImVtYWlsIjoic2FtLnRlc3RAdGVzdC5jb20iLCJwaG9uZSI6IjgwMTU1NTEyMTIiLCJiaXJ0aERheSI6IjIwMDEtMDEtMDMifQ==",
-# "Score":0.0
-# }],
-# "zsetEntries":[{
-# "element":"eyJjdXN0b21lck5hbWUiOiJTYW0gVGVzdCIsImVtYWlsIjoic2FtLnRlc3RAdGVzdC5jb20iLCJwaG9uZSI6IjgwMTU1NTEyMTIiLCJiaXJ0aERheSI6IjIwMDEtMDEtMDMifQ==",
-# "score":0.0
-# }]
-# }
-# 
-# (Note: The Redis Source for Kafka has redundant fields zSetEntries and zsetentries, only one should be parsed)
-#
-# and create separated fields like this:
-# +------------+-----+-----------+------------+---------+-----+-----+-----------------+
-# |         key|value|expiredType|expiredValue|existType|   ch| incr|      zSetEntries|
-# +------------+-----+-----------+------------+---------+-----+-----+-----------------+
-# |U29ydGVkU2V0| null|       null|        null|     NONE|false|false|[[dGVzdDI=, 0.0]]|
-# +------------+-----+-----------+------------+---------+-----+-----+-----------------+
-#
-# storing them in a temporary view called RedisSortedSet
-
-# TO-DO: execute a sql statement against a temporary view, which statement takes the element field from the 0th element in the array of structs and create a column called encodedCustomer
-# the reason we do it this way is that the syntax available select against a view is different than a dataframe, and it makes it easy to select the nth element of an array in a sql column
+raw = spark.sql("select root2.zSetEntries[0].element  from q")
+raw.show(truncate=False)
+# TO-DO: execute a sql statement against a temporary view, which statement takes the element field from the 0th
+# element in the array of structs and create a column called encodedCustomer
+# the reason we do it this way is that the syntax available select against a view is different than a dataframe,
+# and it makes it easy to select the nth element of an array in a sql column
 
 # TO-DO: take the encodedCustomer column which is base64 encoded at first like this:
 # +--------------------+
