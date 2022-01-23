@@ -108,6 +108,9 @@ services:
 
   jupyterlab:
     image: jupyter/pyspark-notebook:latest
+    build:
+        context: .
+        dockerfile: Dockerfile
     container_name: jupyterlab
     ports:
       - 8888:8888
