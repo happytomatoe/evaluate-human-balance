@@ -1,6 +1,108 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, to_json, col, unbase64, base64, split, expr
-from pyspark.sql.types import StructField, StructType, StringType, BooleanType, ArrayType, DateType
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+
+spark = SparkSession \
+    .builder \
+    .appName("test") \
+    .master("spark://spark:7077") \
+    .getOrCreate()
+spark.sparkContext.setLogLevel("WARN")
+
+df = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:19092") \
+    .option("subscribe", "stedi-events") \
+    .option("startingOffsets", "earliest") \
+    .load()
+
+df = df.select(df.key.cast("string").alias("key"), df.value.cast("string").alias("value"))
+# {
+#   "customer": "Jason.Staples@test.com",
+#   "score": 1.5,
+#   "riskDate": "2022-01-23T22:22:37.110Z"
+# }
+schema = StructType([
+    StructField("customer", StringType()),
+    StructField("score", DecimalType(10, 1)),
+])
+df = df.select(from_json(df.value, schema).alias("value"))
+customerRiskDF = df.selectExpr("value.*")
+
+customerRiskDF.createOrReplaceTempView("CustomerRisk")
+
+df = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:19092") \
+    .option("subscribe", "redis-server") \
+    .option("startingOffsets", "earliest") \
+    .load()
+
+v = StructType([
+    StructField("element", StringType()),
+    StructField("score", DecimalType(10, 1)),
+
+])
+
+schema = StructType([
+    StructField("key", StringType()),
+    StructField("value", StringType()),
+    StructField("expiredType", StringType()),
+    StructField("expiredValue", StringType()),
+    StructField("existType", StringType()),
+    StructField("ch", StringType()),
+    StructField("incr", StringType()),
+    StructField("zSetEntries", ArrayType(v)),
+])
+df = df.select(df.key.cast("string").alias("key"), df.value.cast("string").alias("value"))
+
+df.createOrReplaceTempView("RedisSortedSet")
+
+df = df.select(from_json(df.value, schema).alias("value"))
+df = df.selectExpr("value.*")
+
+customer_schema = StructType([
+    StructField("customerName", StringType()),
+    StructField("email", StringType()),
+    StructField("phone", StringType()),
+    StructField("birthDay", StringType()),
+
+])
+elSchema = StructType([
+    StructField("customer", customer_schema)
+])
+
+df = df.withColumn("key", unbase64(df.key).cast("string"))
+df = df.filter(df.key == 'RapidStepTest')
+
+df2 = df.withColumn("element", unbase64(df.zSetEntries[0].element).cast("string"))
+df2 = df2.withColumn("element", from_json(df2.element, elSchema))
+df2 = df2.selectExpr("element.customer.*")
+
+df2.createOrReplaceTempView("CustomerRecords")
+
+emailAndBirthDayStreamingDF = df2.selectExpr("email as email", "split(birthDay,'-')[0] as birthYear")
+emailAndBirthDayStreamingDF.createOrReplaceTempView("Customers")
+
+emailAndBirthDayStreamingDF = df2.selectExpr("email as email", "split(birthDay,'-')[0] as birthYear")
+emailAndBirthDayStreamingDF.createOrReplaceTempView("Customers")
+riskDF = emailAndBirthDayStreamingDF.join(customerRiskDF, emailAndBirthDayStreamingDF.email == customerRiskDF.customer)
+riskDF.createOrReplaceTempView("Risk")
+risk = riskDF
+
+risk = risk.withColumn("value", to_json(struct([col(x) for x in risk.columns])))
+risk = risk.withColumn("key", risk.email)
+
+risk.selectExpr("key", "value") \
+    .writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:19092") \
+    .option("topic", "risk") \
+    .option("checkpointLocation", "/tmp/risk-join") \
+    .start() \
+    .awaitTermination()
 
 # TO-DO: create a StructType for the Kafka redis-server topic which has all changes made to Redis - before Spark 3.0.0, schema inference is not automatic
 
@@ -8,9 +110,9 @@ from pyspark.sql.types import StructField, StructType, StringType, BooleanType, 
 
 # TO-DO: create a StructType for the Kafka stedi-events topic which has the Customer Risk JSON that comes from Redis- before Spark 3.0.0, schema inference is not automatic
 
-#TO-DO: create a spark application object
+# TO-DO: create a spark application object
 
-#TO-DO: set the spark log level to WARN
+# TO-DO: set the spark log level to WARN
 
 # TO-DO: using the spark application object, read a streaming dataframe from the Kafka topic redis-server as the source
 # Be sure to specify the option that reads all the events from the topic including those that were published before you started the spark stream
@@ -64,7 +166,7 @@ from pyspark.sql.types import StructField, StructType, StringType, BooleanType, 
 # |            customer|
 # +--------------------+
 # |{"customerName":"...|
-#+--------------------+
+# +--------------------+
 #
 # with this JSON format: {"customerName":"Sam Test","email":"sam.test@test.com","phone":"8015551212","birthDay":"2001-01-03"}
 
@@ -77,7 +179,7 @@ from pyspark.sql.types import StructField, StructType, StringType, BooleanType, 
 
 # TO-DO: using the spark application object, read a streaming dataframe from the Kafka topic stedi-events as the source
 # Be sure to specify the option that reads all the events from the topic including those that were published before you started the spark stream
-                                   
+
 # TO-DO: cast the value column in the streaming dataframe as a STRING 
 
 # TO-DO: parse the JSON from the single column "value" with a json object in it, like this:
@@ -96,7 +198,8 @@ from pyspark.sql.types import StructField, StructType, StringType, BooleanType, 
 #
 # storing them in a temporary view called CustomerRisk
 
-# TO-DO: execute a sql statement against a temporary view, selecting the customer and the score from the temporary view, creating a dataframe called customerRiskStreamingDF
+# TO-DO: execute a sql statement against a temporary view,
+# selecting the customer and the score from the temporary view, creating a dataframe called customerRiskStreamingDF
 
 # TO-DO: join the streaming dataframes on the email address to get the risk score and the birth year in the same dataframe
 
@@ -112,4 +215,4 @@ from pyspark.sql.types import StructField, StructType, StringType, BooleanType, 
 # |Sarah.Clark@test.com| -4.0|Sarah.Clark@test.com|     1957|
 # +--------------------+-----+--------------------+---------+
 #
-# In this JSON Format {"customer":"Santosh.Fibonnaci@test.com","score":"28.5","email":"Santosh.Fibonnaci@test.com","birthYear":"1963"} 
+# In this JSON Format {"customer":"Santosh.Fibonnaci@test.com","score":"28.5","email":"Santosh.Fibonnaci@test.com","birthYear":"1963"}

@@ -1,0 +1,18 @@
+pyspark==3.1.2
+
+# tests
+findspark
+pytest
+
+
+#jupyter
+jupyter-core
+jupyterthemes
+jupyter_contrib_nbextensions
+
+yapf
+isort
+autopep8
+pandas
+boto3
+ipython-sql
