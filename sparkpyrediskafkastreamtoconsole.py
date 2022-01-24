@@ -1,6 +1,8 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, to_json, col, unbase64, base64, split, expr
+from pyspark.sql.functions import from_json, unbase64
 from pyspark.sql.types import *
+
+KAFKA_URL = "localhost:9092"
 
 spark = SparkSession \
     .builder \
@@ -8,20 +10,15 @@ spark = SparkSession \
     .getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 
-df = spark \
+redisRawStreamingDF = spark \
     .readStream \
     .format("kafka") \
-    .option("kafka.bootstrap.servers", "kafka:19092") \
+    .option("kafka.bootstrap.servers", KAFKA_URL) \
     .option("subscribe", "redis-server") \
     .option("startingOffsets", "earliest") \
     .load()
 
-v = StructType([
-    StructField("element", StringType()),
-    StructField("score", DecimalType(10, 1)),
-
-])
-
+zSenEntrySchema = StructType([StructField("element", StringType()), StructField("score", DecimalType(10, 1)), ])
 schema = StructType([
     StructField("key", StringType()),
     StructField("value", StringType()),
@@ -30,19 +27,15 @@ schema = StructType([
     StructField("existType", StringType()),
     StructField("ch", StringType()),
     StructField("incr", StringType()),
-    StructField("zSetEntries", ArrayType(v)),
+    StructField("zSetEntries", ArrayType(zSenEntrySchema)),
 ])
-df = df.select(df.key.cast("string").alias("key"), df.value.cast("string").alias("value"))
+redisRawStreamingDF = redisRawStreamingDF.select(redisRawStreamingDF.key.cast("string").alias("key"),
+                                                 redisRawStreamingDF.value.cast("string").alias("value"))
 
-# df=df.selectExpr("root2.*")
-df.createOrReplaceTempView("RedisSortedSet")
+redisRawStreamingDF.createOrReplaceTempView("RedisSortedSet")
 
-df = df.select(from_json(df.value, schema).alias("value"))
-df = df.selectExpr("value.*")
-# df=df.select(unbase64(df.key).cast("string").alias("key"),df.value[0].alias("s"))
-
-# df=df.select("s.*")
-# df=df.withColumn("element",unbase64(df.element).cast("string"))
+customerEventsStreamingDF = redisRawStreamingDF.select(from_json(redisRawStreamingDF.value, schema).alias("value"))
+customerEventsStreamingDF = customerEventsStreamingDF.selectExpr("value.*")
 
 customer_schema = StructType([
     StructField("customerName", StringType()),
@@ -51,20 +44,26 @@ customer_schema = StructType([
     StructField("birthDay", StringType()),
 
 ])
-elSchema = StructType([
+elementSchema = StructType([
     StructField("customer", customer_schema)
 ])
 
-df = df.withColumn("key", unbase64(df.key).cast("string"))
-df = df.filter(df.key == 'RapidStepTest')
+customerEventsStreamingDF = customerEventsStreamingDF.withColumn("key", unbase64(
+    customerEventsStreamingDF.key).cast("string"))
+customerEventsStreamingDF = customerEventsStreamingDF.filter(
+    customerEventsStreamingDF.key == 'RapidStepTest')
 
-df2 = df.withColumn("element", unbase64(df.zSetEntries[0].element).cast("string"))
-df2 = df2.withColumn("element", from_json(df2.element, elSchema))
-df2 = df2.selectExpr("element.customer.*")
+customerEventsStreamingDF = customerEventsStreamingDF.withColumn("element", unbase64(
+    customerEventsStreamingDF.zSetEntries[0].element).cast("string"))
+customerEventsStreamingDF = customerEventsStreamingDF.withColumn("element", from_json(
+    customerEventsStreamingDF.element, elementSchema))
+customerEventsStreamingDF = customerEventsStreamingDF.selectExpr("element.customer.*")
+customerEventsStreamingDF = customerEventsStreamingDF.filter('email is not null and birthDay is not null')
 
-df2.createOrReplaceTempView("CustomerRecords")
+customerEventsStreamingDF.createOrReplaceTempView("CustomerRecords")
 
-emailAndBirthDayStreamingDF = df2.selectExpr("email as email", "split(birthDay,'-')[0] as birthYear")
+emailAndBirthDayStreamingDF = customerEventsStreamingDF.selectExpr("email as email",
+                                                                   "split(birthDay,'-')[0] as birthYear")
 emailAndBirthDayStreamingDF.createOrReplaceTempView("q")
 
 q = spark.sql(f"SELECT * FROM q") \
